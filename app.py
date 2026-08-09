@@ -10,17 +10,17 @@ import io
 # CONFIGURAÇÃO DA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Processador Unificado - Apenas Leituras e Entregas",
+    page_title="Processador Operacional - Leituras e Entregas",
     page_icon="⚡",
     layout="wide"
 )
 
 st.title("⚡ Processador Operacional (Leituras Produtivas & Entregas)")
-st.markdown("Filtragem estrita focada apenas em IND_TIPO (P, R, C) e Entregas, descartando eventos de turno e deslocamento.")
+st.markdown("Filtragem de IND_TIPO (P, R, C) com impedimentos focados exclusivamente nas leituras.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO CACHEADA DE PROCESSAMENTO E FILTRAGEM
+# FUNÇÃO DE PROCESSAMENTO
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def processar_arquivos_unificados(uploaded_files):
@@ -61,7 +61,7 @@ def processar_arquivos_unificados(uploaded_files):
         # Normalização dos nomes das colunas
         df_temp.columns = df_temp.columns.astype(str).str.strip().str.upper()
 
-        # 1. Higienização Global de Quebras de Texto e Aspas
+        # Higienização de texto
         for col in df_temp.select_dtypes(include='object').columns:
             df_temp[col] = (
                 df_temp[col]
@@ -71,14 +71,12 @@ def processar_arquivos_unificados(uploaded_files):
                 .str.strip()
             )
 
-        # IDENTIFICAÇÃO DO TIPO DE PLANILHA
         is_entrega = ('DATA_HORA_APROXIMADA' in df_temp.columns or 'DAT_PREVISTA_ENTREGA' in df_temp.columns)
-
         df_padrao = pd.DataFrame()
 
         if is_entrega:
             # =========================================================
-            # REGISTROS DE ENTREGA
+            # REGISTROS DE ENTREGA (Sem Impedimentos)
             # =========================================================
             col_dt = 'DATA_HORA_APROXIMADA' if 'DATA_HORA_APROXIMADA' in df_temp.columns else 'DAT_PREVISTA_ENTREGA'
             col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
@@ -108,17 +106,18 @@ def processar_arquivos_unificados(uploaded_files):
             df_padrao['TIPO_ATIVIDADE_STD'] = "Entrega"
             df_padrao['TAREFA_STD'] = df_temp[col_tarefa] if col_tarefa in df_temp.columns else df_temp.index
 
+            # Entregas não possuem impedimentos operacionais de leitura
             df_padrao['IMP_GRUPO_1'] = 0
             df_padrao['IMP_GRUPO_2'] = 0
-            df_padrao['QTD_FOTO_NUM'] = 0
             df_padrao['LEITURA_LIMPA'] = 1
+            df_padrao['QTD_FOTO_NUM'] = 0
             df_padrao['ORIGEM_DADO'] = "Entrega"
 
             dfs_processados.append(df_padrao)
 
         else:
             # =========================================================
-            # REGISTROS DE LEITURA (APENAS P, R, C)
+            # REGISTROS DE LEITURA (Filtro Estrito P, R, C + Impedimentos)
             # =========================================================
             col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_temp.columns else 'DAT_PREVISTA'
             col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
@@ -130,10 +129,11 @@ def processar_arquivos_unificados(uploaded_files):
             col_loc = 'LOCALIZACAO' if 'LOCALIZACAO' in df_temp.columns else 'ZONA'
             col_ind_tipo = 'IND_TIPO' if 'IND_TIPO' in df_temp.columns else 'TIPO'
             col_tipo_atv = 'TIPO_ATIVIDADE' if 'TIPO_ATIVIDADE' in df_temp.columns else 'TIPO_SERVICO'
-            col_status = 'IND_STATUS_VISITA' if 'IND_STATUS_VISITA' in df_temp.columns else 'STATUS'
+            col_status = 'IND_STATUS_VISITA' if 'IND_STATUS_VISITA' in df_temp.columns else ('STATUS_VISITA' if 'STATUS_VISITA' in df_temp.columns else None)
+            col_nota = 'COD_NOTA_VISITA' if 'COD_NOTA_VISITA' in df_temp.columns else None
             col_foto = 'QTD_FOTO' if 'QTD_FOTO' in df_temp.columns else 'FOTO'
 
-            # FILTRAGEM DIRETA: Manter apenas linhas onde IND_TIPO é P, R ou C (ignorando NaN, vazios, etc.)
+            # Filtro estrito: Apenas linhas onde IND_TIPO é P, R ou C
             if col_ind_tipo in df_temp.columns:
                 df_temp = df_temp[df_temp[col_ind_tipo].astype(str).str.strip().isin(['P', 'R', 'C'])].copy()
 
@@ -168,9 +168,14 @@ def processar_arquivos_unificados(uploaded_files):
 
                 df_padrao['TAREFA_STD'] = df_temp.index
 
-                status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status in df_temp.columns else pd.Series('', index=df_temp.index)
-                df_padrao['IMP_GRUPO_1'] = status_series.str.contains('G1|GRUPO 1', regex=True, na=False).astype(int)
-                df_padrao['IMP_GRUPO_2'] = status_series.str.contains('G2|GRUPO 2', regex=True, na=False).astype(int)
+                # Avaliação de impedimentos nas leituras
+                status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status and col_status in df_temp.columns else pd.Series('', index=df_temp.index)
+                nota_series = df_temp[col_nota].fillna('').astype(str).str.upper() if col_nota and col_nota in df_temp.columns else pd.Series('', index=df_temp.index)
+                
+                combined_status = status_series + " " + nota_series
+
+                df_padrao['IMP_GRUPO_1'] = combined_status.str.contains('G1|GRUPO 1|IMPEDIMENTO 1', regex=True, na=False).astype(int)
+                df_padrao['IMP_GRUPO_2'] = combined_status.str.contains('G2|GRUPO 2|IMPEDIMENTO 2', regex=True, na=False).astype(int)
                 df_padrao['LEITURA_LIMPA'] = ((df_padrao['IMP_GRUPO_1'] == 0) & (df_padrao['IMP_GRUPO_2'] == 0)).astype(int)
 
                 df_padrao['QTD_FOTO_NUM'] = pd.to_numeric(df_temp[col_foto], errors='coerce').fillna(0).astype(int) if col_foto in df_temp.columns else 0
@@ -183,7 +188,7 @@ def processar_arquivos_unificados(uploaded_files):
 
     df_concat = pd.concat(dfs_processados, ignore_index=True)
 
-    # Cruzamento de Nomes de Agentes caso haja linhas sem nome
+    # Preenchimento cruzado de agentes sem nome
     agentes_map = df_concat[df_concat['NOM_AGENTE_STD'] != ''].groupby('COD_AGENTE_STD')['NOM_AGENTE_STD'].first().to_dict()
     
     def atualizar_agente_completo(row):
@@ -207,7 +212,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    with st.spinner("🚀 Processando e filtrando dados produtivos..."):
+    with st.spinner("🚀 Processando dados e calculando impedimentos..."):
         df = processar_arquivos_unificados(uploaded_files)
 
     if df is not None and not df.empty:
