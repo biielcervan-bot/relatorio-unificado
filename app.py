@@ -137,10 +137,10 @@ def processar_arquivos_unificados(uploaded_files):
 
             df_padrao['TAREFA_STD'] = df_temp.index
 
-            # Cálculo de Impedimentos G1 e G2
-            status_series = df_temp[col_status].astype(str).str.upper() if col_status in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['IMP_GRUPO_1'] = status_series.apply(lambda x: 1 if 'G1' in x or 'GRUPO 1' in x else 0)
-            df_padrao['IMP_GRUPO_2'] = status_series.apply(lambda x: 1 if 'G2' in x or 'GRUPO 2' in x else 0)
+            # CORREÇÃO: Tratamento vetorizado seguro contra nulos (NaN) e tipos mistos
+            status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status in df_temp.columns else pd.Series('', index=df_temp.index)
+            df_padrao['IMP_GRUPO_1'] = status_series.str.contains('G1|GRUPO 1', regex=True, na=False).astype(int)
+            df_padrao['IMP_GRUPO_2'] = status_series.str.contains('G2|GRUPO 2', regex=True, na=False).astype(int)
             df_padrao['LEITURA_LIMPA'] = ((df_padrao['IMP_GRUPO_1'] == 0) & (df_padrao['IMP_GRUPO_2'] == 0)).astype(int)
 
             # Cálculo do total de fotos
@@ -148,7 +148,8 @@ def processar_arquivos_unificados(uploaded_files):
             df_padrao['ORIGEM_DADO'] = "Leitura"
 
         # Concatenação formatada do Código + Nome do Agente
-        df_padrao['AGENTE_COMPLETO'] = df_padrao['COD_AGENTE_STD'] + df_padrao['NOM_AGENTE_STD'].apply(lambda x: f" - {x}" if x else "")
+        nom_agente = df_padrao['NOM_AGENTE_STD'].astype(str).str.strip()
+        df_padrao['AGENTE_COMPLETO'] = df_padrao['COD_AGENTE_STD'].astype(str) + nom_agente.apply(lambda x: f" - {x}" if x else "")
         dfs_processados.append(df_padrao)
 
     if not dfs_processados:
