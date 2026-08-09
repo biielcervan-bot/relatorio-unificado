@@ -15,17 +15,19 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("⚡ Processador Operacional (Leituras Produtivas & Entregas)")
-st.markdown("Filtragem estrita de IND_TIPO (P, R, C) com rastreamento de impedimentos via COD_NOTA_VISITA (Família 1 inicia com 1, Família 2 inicia com 2).")
+st.title("⚡ Processador Operacional (Leituras & Entregas)")
+st.markdown("Cruzamento inteligente de Lotes entre planilhas via `NOM_UNIDADE_LEITURA` e tratamento de impedimentos por `COD_NOTA_VISITA`.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO DE PROCESSAMENTO
+# FUNÇÃO DE PROCESSAMENTO E CRUZAMENTO
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def processar_arquivos_unificados(uploaded_files):
-    dfs_processados = []
+    dfs_leitura = []
+    dfs_entrega = []
 
+    # 1º Passo: Ler e separar os arquivos enviados por categoria
     for file in uploaded_files:
         file.seek(0)
         file_bytes = file.read()
@@ -72,118 +74,142 @@ def processar_arquivos_unificados(uploaded_files):
             )
 
         is_entrega = ('DATA_HORA_APROXIMADA' in df_temp.columns or 'DAT_PREVISTA_ENTREGA' in df_temp.columns)
-        df_padrao = pd.DataFrame()
 
         if is_entrega:
-            # =========================================================
-            # REGISTROS DE ENTREGA (Sem Impedimentos)
-            # =========================================================
-            col_dt = 'DATA_HORA_APROXIMADA' if 'DATA_HORA_APROXIMADA' in df_temp.columns else 'DAT_PREVISTA_ENTREGA'
-            col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
-            col_mun = 'NOM_MUNICIPIO' if 'NOM_MUNICIPIO' in df_temp.columns else 'MUNICIPIO'
-            col_unidade = 'NOM_UNIDADE_LEITURA' if 'NOM_UNIDADE_LEITURA' in df_temp.columns else 'UNIDADE_LEITURA'
-            col_agente = 'COD_AGENTE_COMERCIAL' if 'COD_AGENTE_COMERCIAL' in df_temp.columns else 'COD_AGENTE'
-            col_tarefa = 'SEQ_TAREFA' if 'SEQ_TAREFA' in df_temp.columns else df_temp.index
-
-            dt_series = pd.to_datetime(df_temp[col_dt], dayfirst=True, errors='coerce') if col_dt in df_temp.columns else pd.Series(pd.NaT, index=df_temp.index)
-
-            df_padrao['DATA_HORA_DT'] = dt_series
-            df_padrao['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
-            df_padrao['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
-
-            df_padrao['BASE_STD'] = df_temp[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_temp.columns else 'Não Informado'
-            df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_temp.columns else 'Não Informado'
-            df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_unidade in df_temp.columns else 'Não Informado'
-            
-            cod_ag = df_temp[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_temp.columns else pd.Series('Sem Código', index=df_temp.index)
-            df_padrao['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
-            df_padrao['NOM_AGENTE_STD'] = ""
-            
-            df_padrao['LOTE_STD'] = "(Sem Lote)"
-            df_padrao['LOCALIZACAO_STD'] = "(N/A - Entrega)"
-            
-            df_padrao['IND_TIPO_STD'] = "E"
-            df_padrao['TIPO_ATIVIDADE_STD'] = "Entrega"
-            df_padrao['TAREFA_STD'] = df_temp[col_tarefa] if col_tarefa in df_temp.columns else df_temp.index
-
-            # Entregas não possuem impedimentos operacionais
-            df_padrao['IMP_GRUPO_1'] = 0
-            df_padrao['IMP_GRUPO_2'] = 0
-            df_padrao['TOTAL_IMP'] = 0
-            df_padrao['LEITURA_LIMPA'] = 1
-            df_padrao['ORIGEM_DADO'] = "Entrega"
-
-            dfs_processados.append(df_padrao)
-
+            dfs_entrega.append(df_temp)
         else:
-            # =========================================================
-            # REGISTROS DE LEITURA (Filtro Estrito P, R, C + COD_NOTA_VISITA)
-            # =========================================================
-            col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_temp.columns else 'DAT_PREVISTA'
-            col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
-            col_mun = 'NOM_MUNICIPIO' if 'NOM_MUNICIPIO' in df_temp.columns else 'MUNICIPIO'
-            col_lote = 'LOTE' if 'LOTE' in df_temp.columns else 'NUM_LOTE'
-            col_unidade = 'NOM_UNIDADE_LEITURA' if 'NOM_UNIDADE_LEITURA' in df_temp.columns else 'UNIDADE_LEITURA'
-            col_cod_agente = 'COD_AGENTE' if 'COD_AGENTE' in df_temp.columns else 'CODIGO_AGENTE'
-            col_nom_agente = 'AGENTE' if 'AGENTE' in df_temp.columns else 'NOM_AGENTE'
-            col_loc = 'LOCALIZACAO' if 'LOCALIZACAO' in df_temp.columns else 'ZONA'
-            col_ind_tipo = 'IND_TIPO' if 'IND_TIPO' in df_temp.columns else 'TIPO'
-            col_tipo_atv = 'TIPO_ATIVIDADE' if 'TIPO_ATIVIDADE' in df_temp.columns else 'TIPO_SERVICO'
-            col_nota = 'COD_NOTA_VISITA' if 'COD_NOTA_VISITA' in df_temp.columns else None
+            dfs_leitura.append(df_temp)
 
-            # Filtro estrito: Apenas linhas onde IND_TIPO é P, R ou C
-            if col_ind_tipo in df_temp.columns:
-                df_temp = df_temp[df_temp[col_ind_tipo].astype(str).str.strip().isin(['P', 'R', 'C'])].copy()
+    # -------------------------------------------------------------------------
+    # 2º Passo: Processar Leituras e Mapear Unidade -> Lote
+    # -------------------------------------------------------------------------
+    mapa_unidade_lote = {}
+    dfs_processados = []
 
-            if not df_temp.empty:
-                dt_series = pd.to_datetime(df_temp[col_dt], dayfirst=True, errors='coerce') if col_dt in df_temp.columns else pd.Series(pd.NaT, index=df_temp.index)
+    if dfs_leitura:
+        df_leitura_concat = pd.concat(dfs_leitura, ignore_index=True)
+        
+        col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_leitura_concat.columns else 'DAT_PREVISTA'
+        col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_leitura_concat.columns else 'BASE_OPERACIONAL'
+        col_mun = 'NOM_MUNICIPIO' if 'NOM_MUNICIPIO' in df_leitura_concat.columns else 'MUNICIPIO'
+        col_lote = 'LOTE' if 'LOTE' in df_leitura_concat.columns else 'NUM_LOTE'
+        col_unidade = 'NOM_UNIDADE_LEITURA' if 'NOM_UNIDADE_LEITURA' in df_leitura_concat.columns else 'UNIDADE_LEITURA'
+        col_cod_agente = 'COD_AGENTE' if 'COD_AGENTE' in df_leitura_concat.columns else 'CODIGO_AGENTE'
+        col_nom_agente = 'AGENTE' if 'AGENTE' in df_leitura_concat.columns else 'NOM_AGENTE'
+        col_loc = 'LOCALIZACAO' if 'LOCALIZACAO' in df_leitura_concat.columns else 'ZONA'
+        col_ind_tipo = 'IND_TIPO' if 'IND_TIPO' in df_leitura_concat.columns else 'TIPO'
+        col_tipo_atv = 'TIPO_ATIVIDADE' if 'TIPO_ATIVIDADE' in df_leitura_concat.columns else 'TIPO_SERVICO'
+        col_nota = 'COD_NOTA_VISITA' if 'COD_NOTA_VISITA' in df_leitura_concat.columns else None
 
-                df_padrao['DATA_HORA_DT'] = dt_series
-                df_padrao['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
-                df_padrao['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
+        # Filtro estrito: Apenas P, R, C
+        if col_ind_tipo in df_leitura_concat.columns:
+            df_leitura_concat = df_leitura_concat[df_leitura_concat[col_ind_tipo].astype(str).str.strip().isin(['P', 'R', 'C'])].copy()
 
-                df_padrao['BASE_STD'] = df_temp[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_temp.columns else 'Não Informado'
-                df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_temp.columns else 'Não Informado'
-                
-                lote_s = df_temp[col_lote].fillna('').astype(str).str.strip() if col_lote in df_temp.columns else pd.Series('', index=df_temp.index)
-                df_padrao['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'})
-                
-                df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_unidade in df_temp.columns else 'Não Informado'
-                
-                cod_ag = df_temp[col_cod_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_cod_agente in df_temp.columns else pd.Series('Sem Código', index=df_temp.index)
-                df_padrao['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
-                
-                nom_ag = df_temp[col_nom_agente].fillna('').astype(str).str.strip() if col_nom_agente in df_temp.columns else pd.Series('', index=df_temp.index)
-                df_padrao['NOM_AGENTE_STD'] = nom_ag.replace({'nan': ''})
-                
-                loc_s = df_temp[col_loc].fillna('').astype(str).str.strip() if col_loc in df_temp.columns else pd.Series('', index=df_temp.index)
-                df_padrao['LOCALIZACAO_STD'] = loc_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
-                
-                df_padrao['IND_TIPO_STD'] = df_temp[col_ind_tipo].astype(str).str.strip()
-                
-                atv_s = df_temp[col_tipo_atv].fillna('Leitura').astype(str).str.strip() if col_tipo_atv in df_temp.columns else pd.Series('Leitura', index=df_temp.index)
-                df_padrao['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'})
+        if not df_leitura_concat.empty:
+            df_padrao_leituras = pd.DataFrame()
+            
+            dt_series = pd.to_datetime(df_leitura_concat[col_dt], dayfirst=True, errors='coerce') if col_dt in df_leitura_concat.columns else pd.Series(pd.NaT, index=df_leitura_concat.index)
 
-                df_padrao['TAREFA_STD'] = df_temp.index
+            df_padrao_leituras['DATA_HORA_DT'] = dt_series
+            df_padrao_leituras['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
+            df_padrao_leituras['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
 
-                # Tratamento estrito de COD_NOTA_VISITA para impedimentos
-                if col_nota and col_nota in df_temp.columns:
-                    nota_series = df_temp[col_nota].fillna('').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-                else:
-                    nota_series = pd.Series('', index=df_temp.index)
+            df_padrao_leituras['BASE_STD'] = df_leitura_concat[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_leitura_concat.columns else 'Não Informado'
+            df_padrao_leituras['MUNICIPIO_STD'] = df_leitura_concat[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_leitura_concat.columns else 'Não Informado'
+            
+            lote_s = df_leitura_concat[col_lote].fillna('').astype(str).str.strip() if col_lote in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
+            df_padrao_leituras['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'})
+            
+            unidade_s = df_leitura_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_leitura_concat.columns else pd.Series('Não Informado', index=df_leitura_concat.index)
+            df_padrao_leituras['UNIDADE_STD'] = unidade_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
 
-                # Família 1: Começa com '1'
-                df_padrao['IMP_GRUPO_1'] = nota_series.str.startswith('1').astype(int)
-                # Família 2: Começa com '2'
-                df_padrao['IMP_GRUPO_2'] = nota_series.str.startswith('2').astype(int)
-                # Total de Impedimentos (G1 + G2)
-                df_padrao['TOTAL_IMP'] = df_padrao['IMP_GRUPO_1'] + df_padrao['IMP_GRUPO_2']
-                # Leitura Limpa: Sem impedimentos das famílias 1 ou 2
-                df_padrao['LEITURA_LIMPA'] = (df_padrao['TOTAL_IMP'] == 0).astype(int)
+            # Criar dicionário de mapeamento Unitário -> Lote (excluindo os vazios/sem lote)
+            valido_map = df_padrao_leituras[(df_padrao_leituras['UNIDADE_STD'] != 'Não Informado') & (df_padrao_leituras['LOTE_STD'] != '(Sem Lote)')]
+            if not valido_map.empty:
+                mapa_unidade_lote = valido_map.groupby('UNIDADE_STD')['LOTE_STD'].first().to_dict()
 
-                df_padrao['ORIGEM_DADO'] = "Leitura"
+            cod_ag = df_leitura_concat[col_cod_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_cod_agente in df_leitura_concat.columns else pd.Series('Sem Código', index=df_leitura_concat.index)
+            df_padrao_leituras['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
+            
+            nom_ag = df_leitura_concat[col_nom_agente].fillna('').astype(str).str.strip() if col_nom_agente in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
+            df_padrao_leituras['NOM_AGENTE_STD'] = nom_ag.replace({'nan': ''})
+            
+            loc_s = df_leitura_concat[col_loc].fillna('').astype(str).str.strip() if col_loc in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
+            df_padrao_leituras['LOCALIZACAO_STD'] = loc_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+            
+            df_padrao_leituras['IND_TIPO_STD'] = df_leitura_concat[col_ind_tipo].astype(str).str.strip()
+            
+            atv_s = df_leitura_concat[col_tipo_atv].fillna('Leitura').astype(str).str.strip() if col_tipo_atv in df_leitura_concat.columns else pd.Series('Leitura', index=df_leitura_concat.index)
+            df_padrao_leituras['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'})
 
-                dfs_processados.append(df_padrao)
+            df_padrao_leituras['TAREFA_STD'] = df_leitura_concat.index
+
+            # Tratamento de Impedimentos (COD_NOTA_VISITA)
+            if col_nota and col_nota in df_leitura_concat.columns:
+                nota_series = df_leitura_concat[col_nota].fillna('').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            else:
+                nota_series = pd.Series('', index=df_leitura_concat.index)
+
+            df_padrao_leituras['IMP_GRUPO_1'] = nota_series.str.startswith('1').astype(int)
+            df_padrao_leituras['IMP_GRUPO_2'] = nota_series.str.startswith('2').astype(int)
+            df_padrao_leituras['TOTAL_IMP'] = df_padrao_leituras['IMP_GRUPO_1'] + df_padrao_leituras['IMP_GRUPO_2']
+            df_padrao_leituras['LEITURA_LIMPA'] = (df_padrao_leituras['TOTAL_IMP'] == 0).astype(int)
+            df_padrao_leituras['ORIGEM_DADO'] = "Leitura"
+
+            dfs_processados.append(df_padrao_leituras)
+
+    # -------------------------------------------------------------------------
+    # 3º Passo: Processar Entregas e Aplicar Cruzamento de Lote
+    # -------------------------------------------------------------------------
+    if dfs_entrega:
+        df_entrega_concat = pd.concat(dfs_entrega, ignore_index=True)
+        
+        col_dt = 'DATA_HORA_APROXIMADA' if 'DATA_HORA_APROXIMADA' in df_entrega_concat.columns else 'DAT_PREVISTA_ENTREGA'
+        col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_entrega_concat.columns else 'BASE_OPERACIONAL'
+        col_mun = 'NOM_MUNICIPIO' if 'NOM_MUNICIPIO' in df_entrega_concat.columns else 'MUNICIPIO'
+        col_unidade = 'NOM_UNIDADE_LEITURA' if 'NOM_UNIDADE_LEITURA' in df_entrega_concat.columns else 'UNIDADE_LEITURA'
+        col_agente = 'COD_AGENTE_COMERCIAL' if 'COD_AGENTE_COMERCIAL' in df_entrega_concat.columns else 'COD_AGENTE'
+        col_tarefa = 'SEQ_TAREFA' if 'SEQ_TAREFA' in df_entrega_concat.columns else df_entrega_concat.index
+
+        df_padrao_entregas = pd.DataFrame()
+        dt_series = pd.to_datetime(df_entrega_concat[col_dt], dayfirst=True, errors='coerce') if col_dt in df_entrega_concat.columns else pd.Series(pd.NaT, index=df_entrega_concat.index)
+
+        df_padrao_entregas['DATA_HORA_DT'] = dt_series
+        df_padrao_entregas['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
+        df_padrao_entregas['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
+
+        df_padrao_entregas['BASE_STD'] = df_entrega_concat[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_entrega_concat.columns else 'Não Informado'
+        df_padrao_entregas['MUNICIPIO_STD'] = df_entrega_concat[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_entrega_concat.columns else 'Não Informado'
+        
+        unidade_e = df_entrega_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_entrega_concat.columns else pd.Series('Não Informado', index=df_entrega_concat.index)
+        df_padrao_entregas['UNIDADE_STD'] = unidade_e.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+
+        # Cruzamento: Buscar o Lote da Leitura correspondente à Unidade da Entrega
+        def associar_lote_cruzado(row):
+            uni = row['UNIDADE_STD']
+            if uni in mapa_unidade_lote:
+                return mapa_unidade_lote[uni]
+            return "(Sem Lote Cruzado)"
+
+        df_padrao_entregas['LOTE_STD'] = df_padrao_entregas.apply(associar_lote_cruzado, axis=1)
+
+        cod_ag = df_entrega_concat[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_entrega_concat.columns else pd.Series('Sem Código', index=df_entrega_concat.index)
+        df_padrao_entregas['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
+        df_padrao_entregas['NOM_AGENTE_STD'] = ""
+        
+        df_padrao_entregas['LOCALIZACAO_STD'] = "(N/A - Entrega)"
+        df_padrao_entregas['IND_TIPO_STD'] = "E"
+        df_padrao_entregas['TIPO_ATIVIDADE_STD'] = "Entrega"
+        df_padrao_entregas['TAREFA_STD'] = df_entrega_concat[col_tarefa] if col_tarefa in df_entrega_concat.columns else df_entrega_concat.index
+
+        # Entregas não possuem impedimentos
+        df_padrao_entregas['IMP_GRUPO_1'] = 0
+        df_padrao_entregas['IMP_GRUPO_2'] = 0
+        df_padrao_entregas['TOTAL_IMP'] = 0
+        df_padrao_entregas['LEITURA_LIMPA'] = 1
+        df_padrao_entregas['ORIGEM_DADO'] = "Entrega"
+
+        dfs_processados.append(df_padrao_entregas)
 
     if not dfs_processados:
         return None
@@ -214,7 +240,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    with st.spinner("🚀 Processando e calculando impedimentos via COD_NOTA_VISITA..."):
+    with st.spinner("🚀 Cruzando lotes por unidade e processando dados..."):
         df = processar_arquivos_unificados(uploaded_files)
 
     if df is not None and not df.empty:
@@ -228,7 +254,7 @@ if uploaded_files:
         f_base = criar_multiselect("Base Operacional", 'BASE_STD')
         f_mun = criar_multiselect("Município", 'MUNICIPIO_STD')
         f_unidade = criar_multiselect("Unidade de Leitura", 'UNIDADE_STD')
-        f_lote = criar_multiselect("Lote", 'LOTE_STD')
+        f_lote = criar_multiselect("Lote (Cruzado)", 'LOTE_STD')
         f_loc = criar_multiselect("Localização", 'LOCALIZACAO_STD')
         f_ind_tipo = criar_multiselect("IND_TIPO (E, P, R, C)", 'IND_TIPO_STD')
         f_tipo_atv = criar_multiselect("Tipo de Atividade", 'TIPO_ATIVIDADE_STD')
@@ -255,10 +281,9 @@ if uploaded_files:
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Registros", f"{len(df_filtrado):,}".replace(",", "."))
             col2.metric("Registros Limpos", f"{df_filtrado['LEITURA_LIMPA'].sum():,}".replace(",", "."))
-            col3.metric("Impedimentos G1 (Inicia com 1)", f"{df_filtrado['IMP_GRUPO_1'].sum():,}".replace(",", "."))
-            col4.metric("Impedimentos G2 (Inicia com 2)", f"{df_filtrado['IMP_GRUPO_2'].sum():,}".replace(",", "."))
+            col3.metric("Impedimentos G1", f"{df_filtrado['IMP_GRUPO_1'].sum():,}".replace(",", "."))
+            col4.metric("Impedimentos G2", f"{df_filtrado['IMP_GRUPO_2'].sum():,}".replace(",", "."))
             
-            # Métrica extra destacada para o Total de Impedimentos
             total_geral_imp = df_filtrado['TOTAL_IMP'].sum()
             st.info(f"🚨 **Total Geral de Impedimentos Operacionais:** {total_geral_imp:,}".replace(",", "."))
 
