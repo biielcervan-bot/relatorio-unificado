@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("⚡ Processador Operacional (Leituras Produtivas & Entregas)")
-st.markdown("Filtragem de IND_TIPO (P, R, C) com impedimentos focados exclusivamente nas leituras.")
+st.markdown("Filtragem estrita de IND_TIPO (P, R, C) com rastreamento de impedimentos via COD_NOTA_VISITA (Família 1 inicia com 1, Família 2 inicia com 2).")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
@@ -106,18 +106,18 @@ def processar_arquivos_unificados(uploaded_files):
             df_padrao['TIPO_ATIVIDADE_STD'] = "Entrega"
             df_padrao['TAREFA_STD'] = df_temp[col_tarefa] if col_tarefa in df_temp.columns else df_temp.index
 
-            # Entregas não possuem impedimentos operacionais de leitura
+            # Entregas não possuem impedimentos operacionais
             df_padrao['IMP_GRUPO_1'] = 0
             df_padrao['IMP_GRUPO_2'] = 0
+            df_padrao['TOTAL_IMP'] = 0
             df_padrao['LEITURA_LIMPA'] = 1
-            df_padrao['QTD_FOTO_NUM'] = 0
             df_padrao['ORIGEM_DADO'] = "Entrega"
 
             dfs_processados.append(df_padrao)
 
         else:
             # =========================================================
-            # REGISTROS DE LEITURA (Filtro Estrito P, R, C + Impedimentos)
+            # REGISTROS DE LEITURA (Filtro Estrito P, R, C + COD_NOTA_VISITA)
             # =========================================================
             col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_temp.columns else 'DAT_PREVISTA'
             col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
@@ -129,9 +129,7 @@ def processar_arquivos_unificados(uploaded_files):
             col_loc = 'LOCALIZACAO' if 'LOCALIZACAO' in df_temp.columns else 'ZONA'
             col_ind_tipo = 'IND_TIPO' if 'IND_TIPO' in df_temp.columns else 'TIPO'
             col_tipo_atv = 'TIPO_ATIVIDADE' if 'TIPO_ATIVIDADE' in df_temp.columns else 'TIPO_SERVICO'
-            col_status = 'IND_STATUS_VISITA' if 'IND_STATUS_VISITA' in df_temp.columns else ('STATUS_VISITA' if 'STATUS_VISITA' in df_temp.columns else None)
             col_nota = 'COD_NOTA_VISITA' if 'COD_NOTA_VISITA' in df_temp.columns else None
-            col_foto = 'QTD_FOTO' if 'QTD_FOTO' in df_temp.columns else 'FOTO'
 
             # Filtro estrito: Apenas linhas onde IND_TIPO é P, R ou C
             if col_ind_tipo in df_temp.columns:
@@ -168,17 +166,21 @@ def processar_arquivos_unificados(uploaded_files):
 
                 df_padrao['TAREFA_STD'] = df_temp.index
 
-                # Avaliação de impedimentos nas leituras
-                status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status and col_status in df_temp.columns else pd.Series('', index=df_temp.index)
-                nota_series = df_temp[col_nota].fillna('').astype(str).str.upper() if col_nota and col_nota in df_temp.columns else pd.Series('', index=df_temp.index)
-                
-                combined_status = status_series + " " + nota_series
+                # Tratamento estrito de COD_NOTA_VISITA para impedimentos
+                if col_nota and col_nota in df_temp.columns:
+                    nota_series = df_temp[col_nota].fillna('').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                else:
+                    nota_series = pd.Series('', index=df_temp.index)
 
-                df_padrao['IMP_GRUPO_1'] = combined_status.str.contains('G1|GRUPO 1|IMPEDIMENTO 1', regex=True, na=False).astype(int)
-                df_padrao['IMP_GRUPO_2'] = combined_status.str.contains('G2|GRUPO 2|IMPEDIMENTO 2', regex=True, na=False).astype(int)
-                df_padrao['LEITURA_LIMPA'] = ((df_padrao['IMP_GRUPO_1'] == 0) & (df_padrao['IMP_GRUPO_2'] == 0)).astype(int)
+                # Família 1: Começa com '1'
+                df_padrao['IMP_GRUPO_1'] = nota_series.str.startswith('1').astype(int)
+                # Família 2: Começa com '2'
+                df_padrao['IMP_GRUPO_2'] = nota_series.str.startswith('2').astype(int)
+                # Total de Impedimentos (G1 + G2)
+                df_padrao['TOTAL_IMP'] = df_padrao['IMP_GRUPO_1'] + df_padrao['IMP_GRUPO_2']
+                # Leitura Limpa: Sem impedimentos das famílias 1 ou 2
+                df_padrao['LEITURA_LIMPA'] = (df_padrao['TOTAL_IMP'] == 0).astype(int)
 
-                df_padrao['QTD_FOTO_NUM'] = pd.to_numeric(df_temp[col_foto], errors='coerce').fillna(0).astype(int) if col_foto in df_temp.columns else 0
                 df_padrao['ORIGEM_DADO'] = "Leitura"
 
                 dfs_processados.append(df_padrao)
@@ -212,7 +214,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    with st.spinner("🚀 Processando dados e calculando impedimentos..."):
+    with st.spinner("🚀 Processando e calculando impedimentos via COD_NOTA_VISITA..."):
         df = processar_arquivos_unificados(uploaded_files)
 
     if df is not None and not df.empty:
@@ -250,12 +252,15 @@ if uploaded_files:
         if df_filtrado.empty:
             st.warning("⚠️ Nenhum registro encontrado para a combinação de filtros selecionada.")
         else:
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Registros", f"{len(df_filtrado):,}".replace(",", "."))
             col2.metric("Registros Limpos", f"{df_filtrado['LEITURA_LIMPA'].sum():,}".replace(",", "."))
-            col3.metric("Impedimentos G1", f"{df_filtrado['IMP_GRUPO_1'].sum():,}".replace(",", "."))
-            col4.metric("Impedimentos G2", f"{df_filtrado['IMP_GRUPO_2'].sum():,}".replace(",", "."))
-            col5.metric("Total de Fotos", f"{df_filtrado['QTD_FOTO_NUM'].sum():,}".replace(",", "."))
+            col3.metric("Impedimentos G1 (Inicia com 1)", f"{df_filtrado['IMP_GRUPO_1'].sum():,}".replace(",", "."))
+            col4.metric("Impedimentos G2 (Inicia com 2)", f"{df_filtrado['IMP_GRUPO_2'].sum():,}".replace(",", "."))
+            
+            # Métrica extra destacada para o Total de Impedimentos
+            total_geral_imp = df_filtrado['TOTAL_IMP'].sum()
+            st.info(f"🚨 **Total Geral de Impedimentos Operacionais:** {total_geral_imp:,}".replace(",", "."))
 
             st.markdown("---")
 
@@ -273,7 +278,7 @@ if uploaded_files:
                 LEITURAS_LIMPAS=('LEITURA_LIMPA', 'sum'),
                 IMP_G1=('IMP_GRUPO_1', 'sum'),
                 IMP_G2=('IMP_GRUPO_2', 'sum'),
-                TOTAL_FOTOS=('QTD_FOTO_NUM', 'sum'),
+                TOTAL_IMP=('TOTAL_IMP', 'sum'),
                 HORA_INI=('DATA_HORA_DT', lambda x: hora_min_max(x, 'min')),
                 HORA_FIM=('DATA_HORA_DT', lambda x: hora_min_max(x, 'max'))
             )
@@ -282,7 +287,7 @@ if uploaded_files:
                 'Data Realização', 'Base Operacional', 'Município', 'Lote',
                 'Unidade de Leitura', 'Localização', 'IND_TIPO', 'Tipo Atividade',
                 'Agente Comercial', 'Total Registros', 'Limpos / Sucesso',
-                'Impedimentos G1', 'Impedimentos G2', 'Total Fotos', '1ª Ação', 'Última Ação'
+                'Impedimentos G1', 'Impedimentos G2', 'Total Impedimentos', '1ª Ação', 'Última Ação'
             ]
 
             col_graf1, col_graf2 = st.columns(2)
@@ -318,13 +323,13 @@ if uploaded_files:
                 df_detalhado_export = df_filtrado[[
                     'ORIGEM_DADO', 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
                     'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO', 'HORA',
-                    'LEITURA_LIMPA', 'IMP_GRUPO_1', 'IMP_GRUPO_2', 'QTD_FOTO_NUM'
+                    'LEITURA_LIMPA', 'IMP_GRUPO_1', 'IMP_GRUPO_2', 'TOTAL_IMP'
                 ]].copy()
 
                 df_detalhado_export.columns = [
                     'Origem', 'Data Realização', 'Base Operacional', 'Município', 'Lote', 'Unidade de Leitura',
                     'Localização', 'IND_TIPO', 'Tipo Atividade', 'Agente Comercial', 'Hora',
-                    'Registro Limpo (1/0)', 'Impedimento G1', 'Impedimento G2', 'Qtd Fotos'
+                    'Registro Limpo (1/0)', 'Impedimento G1', 'Impedimento G2', 'Total Impedimentos'
                 ]
                 df_detalhado_export.to_excel(writer, sheet_name="Base Filtrada Detalhada", index=False)
 
