@@ -10,24 +10,24 @@ import io
 # CONFIGURAÇÃO DA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Processador Unificado - Leitura & Entrega",
+    page_title="Processador Unificado - Apenas Leituras e Entregas",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ Processador Operacional Unificado (Leitura & Entrega)")
-st.markdown("Consolidação automática com higienização de texto e medição por `IND_TIPO`.")
+st.title("⚡ Processador Operacional (Leituras Produtivas & Entregas)")
+st.markdown("Filtragem estrita focada apenas em IND_TIPO (P, R, C) e Entregas, descartando eventos de turno e deslocamento.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO CACHEADA DE PROCESSAMENTO E UNIFICAÇÃO DE REGISTROS
+# FUNÇÃO CACHEADA DE PROCESSAMENTO E FILTRAGEM
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def processar_arquivos_unificados(uploaded_files):
     dfs_processados = []
 
     for file in uploaded_files:
-        file.seek(0)  # Garante leitura a partir do início do buffer
+        file.seek(0)
         file_bytes = file.read()
         df_temp = None
 
@@ -61,7 +61,7 @@ def processar_arquivos_unificados(uploaded_files):
         # Normalização dos nomes das colunas
         df_temp.columns = df_temp.columns.astype(str).str.strip().str.upper()
 
-        # HIGIENIZAÇÃO DE QUEBRAS DE TEXTO E ASPAS DENTRO DOS CAMPOS
+        # 1. Higienização Global de Quebras de Texto e Aspas
         for col in df_temp.select_dtypes(include='object').columns:
             df_temp[col] = (
                 df_temp[col]
@@ -93,16 +93,18 @@ def processar_arquivos_unificados(uploaded_files):
             df_padrao['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
             df_padrao['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
 
-            df_padrao['BASE_STD'] = df_temp[col_base].fillna('N/A').astype(str).str.strip() if col_base in df_temp.columns else 'N/A'
-            df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('N/A').astype(str).str.strip() if col_mun in df_temp.columns else 'N/A'
-            df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('N/A').astype(str).str.strip() if col_unidade in df_temp.columns else 'N/A'
-            df_padrao['COD_AGENTE_STD'] = df_temp[col_agente].fillna('N/A').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_temp.columns else 'N/A'
+            df_padrao['BASE_STD'] = df_temp[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_temp.columns else 'Não Informado'
+            df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_temp.columns else 'Não Informado'
+            df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_unidade in df_temp.columns else 'Não Informado'
+            
+            cod_ag = df_temp[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_temp.columns else pd.Series('Sem Código', index=df_temp.index)
+            df_padrao['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
             df_padrao['NOM_AGENTE_STD'] = ""
+            
             df_padrao['LOTE_STD'] = "(Sem Lote)"
             df_padrao['LOCALIZACAO_STD'] = "(N/A - Entrega)"
             
-            # REGRAS DE ATIVIDADE PARA ENTREGA:
-            df_padrao['IND_TIPO_STD'] = "E"  # Obrigatoriamente 'E'
+            df_padrao['IND_TIPO_STD'] = "E"
             df_padrao['TIPO_ATIVIDADE_STD'] = "Entrega"
             df_padrao['TAREFA_STD'] = df_temp[col_tarefa] if col_tarefa in df_temp.columns else df_temp.index
 
@@ -112,9 +114,11 @@ def processar_arquivos_unificados(uploaded_files):
             df_padrao['LEITURA_LIMPA'] = 1
             df_padrao['ORIGEM_DADO'] = "Entrega"
 
+            dfs_processados.append(df_padrao)
+
         else:
             # =========================================================
-            # REGISTROS DE LEITURA
+            # REGISTROS DE LEITURA (APENAS P, R, C)
             # =========================================================
             col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_temp.columns else 'DAT_PREVISTA'
             col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_temp.columns else 'BASE_OPERACIONAL'
@@ -129,50 +133,69 @@ def processar_arquivos_unificados(uploaded_files):
             col_status = 'IND_STATUS_VISITA' if 'IND_STATUS_VISITA' in df_temp.columns else 'STATUS'
             col_foto = 'QTD_FOTO' if 'QTD_FOTO' in df_temp.columns else 'FOTO'
 
-            dt_series = pd.to_datetime(df_temp[col_dt], dayfirst=True, errors='coerce') if col_dt in df_temp.columns else pd.Series(pd.NaT, index=df_temp.index)
+            # FILTRAGEM DIRETA: Manter apenas linhas onde IND_TIPO é P, R ou C (ignorando NaN, vazios, etc.)
+            if col_ind_tipo in df_temp.columns:
+                df_temp = df_temp[df_temp[col_ind_tipo].astype(str).str.strip().isin(['P', 'R', 'C'])].copy()
 
-            df_padrao['DATA_HORA_DT'] = dt_series
-            df_padrao['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
-            df_padrao['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
+            if not df_temp.empty:
+                dt_series = pd.to_datetime(df_temp[col_dt], dayfirst=True, errors='coerce') if col_dt in df_temp.columns else pd.Series(pd.NaT, index=df_temp.index)
 
-            df_padrao['BASE_STD'] = df_temp[col_base].fillna('N/A').astype(str).str.strip() if col_base in df_temp.columns else 'N/A'
-            df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('N/A').astype(str).str.strip() if col_mun in df_temp.columns else 'N/A'
-            
-            lote_s = df_temp[col_lote].fillna('').astype(str).str.strip() if col_lote in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'})
-            
-            df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('N/A').astype(str).str.strip() if col_unidade in df_temp.columns else 'N/A'
-            df_padrao['COD_AGENTE_STD'] = df_temp[col_cod_agente].fillna('N/A').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_cod_agente in df_temp.columns else 'N/A'
-            df_padrao['NOM_AGENTE_STD'] = df_temp[col_nom_agente].fillna('').astype(str).str.strip() if col_nom_agente in df_temp.columns else ''
-            
-            loc_s = df_temp[col_loc].fillna('').astype(str).str.strip() if col_loc in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['LOCALIZACAO_STD'] = loc_s.replace({'': '(Não Informado)', 'nan': '(Não Informado)'})
-            
-            ind_s = df_temp[col_ind_tipo].fillna('').astype(str).str.strip() if col_ind_tipo in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['IND_TIPO_STD'] = ind_s.replace({'': 'Outros', 'nan': 'Outros'})
-            
-            atv_s = df_temp[col_tipo_atv].fillna('').astype(str).str.strip() if col_tipo_atv in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'})
+                df_padrao['DATA_HORA_DT'] = dt_series
+                df_padrao['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
+                df_padrao['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
 
-            df_padrao['TAREFA_STD'] = df_temp.index
+                df_padrao['BASE_STD'] = df_temp[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_temp.columns else 'Não Informado'
+                df_padrao['MUNICIPIO_STD'] = df_temp[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_temp.columns else 'Não Informado'
+                
+                lote_s = df_temp[col_lote].fillna('').astype(str).str.strip() if col_lote in df_temp.columns else pd.Series('', index=df_temp.index)
+                df_padrao['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'})
+                
+                df_padrao['UNIDADE_STD'] = df_temp[col_unidade].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_unidade in df_temp.columns else 'Não Informado'
+                
+                cod_ag = df_temp[col_cod_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_cod_agente in df_temp.columns else pd.Series('Sem Código', index=df_temp.index)
+                df_padrao['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
+                
+                nom_ag = df_temp[col_nom_agente].fillna('').astype(str).str.strip() if col_nom_agente in df_temp.columns else pd.Series('', index=df_temp.index)
+                df_padrao['NOM_AGENTE_STD'] = nom_ag.replace({'nan': ''})
+                
+                loc_s = df_temp[col_loc].fillna('').astype(str).str.strip() if col_loc in df_temp.columns else pd.Series('', index=df_temp.index)
+                df_padrao['LOCALIZACAO_STD'] = loc_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+                
+                df_padrao['IND_TIPO_STD'] = df_temp[col_ind_tipo].astype(str).str.strip()
+                
+                atv_s = df_temp[col_tipo_atv].fillna('Leitura').astype(str).str.strip() if col_tipo_atv in df_temp.columns else pd.Series('Leitura', index=df_temp.index)
+                df_padrao['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'})
 
-            # Impedimentos G1 / G2 e Fotos
-            status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status in df_temp.columns else pd.Series('', index=df_temp.index)
-            df_padrao['IMP_GRUPO_1'] = status_series.str.contains('G1|GRUPO 1', regex=True, na=False).astype(int)
-            df_padrao['IMP_GRUPO_2'] = status_series.str.contains('G2|GRUPO 2', regex=True, na=False).astype(int)
-            df_padrao['LEITURA_LIMPA'] = ((df_padrao['IMP_GRUPO_1'] == 0) & (df_padrao['IMP_GRUPO_2'] == 0)).astype(int)
+                df_padrao['TAREFA_STD'] = df_temp.index
 
-            df_padrao['QTD_FOTO_NUM'] = pd.to_numeric(df_temp[col_foto], errors='coerce').fillna(0).astype(int) if col_foto in df_temp.columns else 0
-            df_padrao['ORIGEM_DADO'] = "Leitura"
+                status_series = df_temp[col_status].fillna('').astype(str).str.upper() if col_status in df_temp.columns else pd.Series('', index=df_temp.index)
+                df_padrao['IMP_GRUPO_1'] = status_series.str.contains('G1|GRUPO 1', regex=True, na=False).astype(int)
+                df_padrao['IMP_GRUPO_2'] = status_series.str.contains('G2|GRUPO 2', regex=True, na=False).astype(int)
+                df_padrao['LEITURA_LIMPA'] = ((df_padrao['IMP_GRUPO_1'] == 0) & (df_padrao['IMP_GRUPO_2'] == 0)).astype(int)
 
-        nom_agente = df_padrao['NOM_AGENTE_STD'].astype(str).str.strip()
-        df_padrao['AGENTE_COMPLETO'] = df_padrao['COD_AGENTE_STD'].astype(str) + nom_agente.apply(lambda x: f" - {x}" if x else "")
-        dfs_processados.append(df_padrao)
+                df_padrao['QTD_FOTO_NUM'] = pd.to_numeric(df_temp[col_foto], errors='coerce').fillna(0).astype(int) if col_foto in df_temp.columns else 0
+                df_padrao['ORIGEM_DADO'] = "Leitura"
+
+                dfs_processados.append(df_padrao)
 
     if not dfs_processados:
         return None
 
-    return pd.concat(dfs_processados, ignore_index=True)
+    df_concat = pd.concat(dfs_processados, ignore_index=True)
+
+    # Cruzamento de Nomes de Agentes caso haja linhas sem nome
+    agentes_map = df_concat[df_concat['NOM_AGENTE_STD'] != ''].groupby('COD_AGENTE_STD')['NOM_AGENTE_STD'].first().to_dict()
+    
+    def atualizar_agente_completo(row):
+        cod = row['COD_AGENTE_STD']
+        nom = row['NOM_AGENTE_STD']
+        if not nom and cod in agentes_map:
+            nom = agentes_map[cod]
+        return f"{cod} - {nom}" if nom else cod
+
+    df_concat['AGENTE_COMPLETO'] = df_concat.apply(atualizar_agente_completo, axis=1)
+
+    return df_concat
 
 # -----------------------------------------------------------------------------
 # INTERFACE PRINCIPAL
@@ -184,11 +207,10 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    with st.spinner("🚀 Processando e padronizando os arquivos..."):
+    with st.spinner("🚀 Processando e filtrando dados produtivos..."):
         df = processar_arquivos_unificados(uploaded_files)
 
     if df is not None and not df.empty:
-        # BARRA LATERAL: FILTROS DINÂMICOS
         st.sidebar.header("🎯 Filtros Unificados")
 
         def criar_multiselect(label, col_name):
@@ -201,7 +223,7 @@ if uploaded_files:
         f_unidade = criar_multiselect("Unidade de Leitura", 'UNIDADE_STD')
         f_lote = criar_multiselect("Lote", 'LOTE_STD')
         f_loc = criar_multiselect("Localização", 'LOCALIZACAO_STD')
-        f_ind_tipo = criar_multiselect("IND_TIPO (Ex: E, P, R, C)", 'IND_TIPO_STD')
+        f_ind_tipo = criar_multiselect("IND_TIPO (E, P, R, C)", 'IND_TIPO_STD')
         f_tipo_atv = criar_multiselect("Tipo de Atividade", 'TIPO_ATIVIDADE_STD')
         f_agente = criar_multiselect("Agente Comercial", 'AGENTE_COMPLETO')
         f_data_real = criar_multiselect("Data da Ação", 'DATA_REAL')
@@ -223,7 +245,6 @@ if uploaded_files:
         if df_filtrado.empty:
             st.warning("⚠️ Nenhum registro encontrado para a combinação de filtros selecionada.")
         else:
-            # 1. INDICADORES GLOBAIS
             col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Total Registros", f"{len(df_filtrado):,}".replace(",", "."))
             col2.metric("Registros Limpos", f"{df_filtrado['LEITURA_LIMPA'].sum():,}".replace(",", "."))
@@ -233,17 +254,15 @@ if uploaded_files:
 
             st.markdown("---")
 
-            # Helper para hora inicial e final de ação
             def hora_min_max(s, tipo):
                 v = s.dropna()
                 if v.empty: return "N/A"
                 res = v.min() if tipo == 'min' else v.max()
                 return res.strftime('%H:%M') if pd.notna(res) else "N/A"
 
-            # 2. AGRUPAMENTO RESUMO CONSOLIDADO (Separando por IND_TIPO)
             df_resumo = df_filtrado.groupby([
                 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
-                'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'COD_AGENTE_STD', 'NOM_AGENTE_STD'
+                'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO'
             ], as_index=False).agg(
                 TOTAL_REGISTROS=('TAREFA_STD', 'count'),
                 LEITURAS_LIMPAS=('LEITURA_LIMPA', 'sum'),
@@ -257,13 +276,10 @@ if uploaded_files:
             df_resumo.columns = [
                 'Data Realização', 'Base Operacional', 'Município', 'Lote',
                 'Unidade de Leitura', 'Localização', 'IND_TIPO', 'Tipo Atividade',
-                'Código Agente', 'Nome Agente',
-                'Total Registros', 'Limpos / Sucesso',
-                'Impedimentos G1', 'Impedimentos G2',
-                'Total Fotos', '1ª Ação', 'Última Ação'
+                'Agente Comercial', 'Total Registros', 'Limpos / Sucesso',
+                'Impedimentos G1', 'Impedimentos G2', 'Total Fotos', '1ª Ação', 'Última Ação'
             ]
 
-            # 3. PAINEL DE GRÁFICOS
             col_graf1, col_graf2 = st.columns(2)
             with col_graf1:
                 st.subheader("🏙️ Volume por Município")
@@ -277,7 +293,7 @@ if uploaded_files:
                 st.plotly_chart(fig_cidade, use_container_width=True)
 
             with col_graf2:
-                st.subheader("📊 Produção por IND_TIPO (E, P, R, C)")
+                st.subheader("📊 Produção por IND_TIPO")
                 df_ind_graf = df_filtrado.groupby('IND_TIPO_STD').size().reset_index(name='Qtd Registros')
                 fig_ind = px.pie(
                     df_ind_graf, names='IND_TIPO_STD', values='Qtd Registros', hole=0.45,
@@ -289,27 +305,24 @@ if uploaded_files:
             st.subheader("📋 Resumo Consolidado por Atividade e Agente")
             st.dataframe(df_resumo, use_container_width=True)
 
-            # 4. EXPORTAÇÃO EXCEL EM ALTA VELOCIDADE
+            # Exportação Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                # Aba 1: Resumo Consolidado
                 df_resumo.to_excel(writer, sheet_name="Resumo Consolidado", index=False)
 
-                # Aba 2: Base Filtrada Detalhada (Linha por Linha)
                 df_detalhado_export = df_filtrado[[
                     'ORIGEM_DADO', 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
-                    'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'COD_AGENTE_STD', 'NOM_AGENTE_STD', 'HORA',
+                    'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO', 'HORA',
                     'LEITURA_LIMPA', 'IMP_GRUPO_1', 'IMP_GRUPO_2', 'QTD_FOTO_NUM'
                 ]].copy()
 
                 df_detalhado_export.columns = [
                     'Origem', 'Data Realização', 'Base Operacional', 'Município', 'Lote', 'Unidade de Leitura',
-                    'Localização', 'IND_TIPO', 'Tipo Atividade', 'Código Agente', 'Nome Agente', 'Hora',
+                    'Localização', 'IND_TIPO', 'Tipo Atividade', 'Agente Comercial', 'Hora',
                     'Registro Limpo (1/0)', 'Impedimento G1', 'Impedimento G2', 'Qtd Fotos'
                 ]
                 df_detalhado_export.to_excel(writer, sheet_name="Base Filtrada Detalhada", index=False)
 
-                # Estilos do Excel
                 workbook = writer.book
                 header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
                 header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
@@ -322,7 +335,7 @@ if uploaded_files:
 
                     for col in ws.columns:
                         col_letter = get_column_letter(col[0].column)
-                        ws.column_dimensions[col_letter].width = 18
+                        ws.column_dimensions[col_letter].width = 20
 
             st.download_button(
                 label="📥 Baixar Relatório Unificado (Excel)",
