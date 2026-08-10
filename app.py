@@ -80,6 +80,7 @@ def processar_arquivos_unificados(uploaded_files):
     mapa_unidade_lote = {}
     dfs_processados = []
 
+    # 1. Processamento de Leituras (Gera o mapa de Unidade -> Lote)
     if dfs_leitura:
         df_leitura_concat = pd.concat(dfs_leitura, ignore_index=True)
         
@@ -116,6 +117,7 @@ def processar_arquivos_unificados(uploaded_files):
             unidade_s = df_leitura_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_leitura_concat.columns else pd.Series('Não Informado', index=df_leitura_concat.index)
             df_padrao_leituras['UNIDADE_STD'] = unidade_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
 
+            # CRIAÇÃO DO MAPA DE CRUZAMENTO DE LOTES (Unidade -> Lote)
             valido_map = df_padrao_leituras[(df_padrao_leituras['UNIDADE_STD'] != 'Não Informado') & (df_padrao_leituras['LOTE_STD'] != '(Sem Lote)')]
             if not valido_map.empty:
                 mapa_unidade_lote = valido_map.groupby('UNIDADE_STD')['LOTE_STD'].first().to_dict()
@@ -149,6 +151,7 @@ def processar_arquivos_unificados(uploaded_files):
 
             dfs_processados.append(df_padrao_leituras)
 
+    # 2. Processamento de Entregas (Utiliza o mapa gerado pelas leituras)
     if dfs_entrega:
         df_entrega_concat = pd.concat(dfs_entrega, ignore_index=True)
         
@@ -172,6 +175,7 @@ def processar_arquivos_unificados(uploaded_files):
         unidade_e = df_entrega_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_entrega_concat.columns else pd.Series('Não Informado', index=df_entrega_concat.index)
         df_padrao_entregas['UNIDADE_STD'] = unidade_e.replace({'': 'Não Informado', 'nan': 'Não Informado'})
 
+        # APLICAÇÃO DO CRUZAMENTO DE LOTES NAS ENTREGAS
         def associar_lote_cruzado(row):
             uni = row['UNIDADE_STD']
             if uni in mapa_unidade_lote:
