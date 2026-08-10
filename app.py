@@ -5,35 +5,36 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 import io
+import gc
 
 # -----------------------------------------------------------------------------
 # CONFIGURAÇÃO DA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Processador Operacional - Leituras e Entregas",
+    page_title="Processador Operacional - Alta Performance",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ Processador Operacional (Leituras & Entregas)")
-st.markdown("Cruzamento inteligente de Lotes entre planilhas via `NOM_UNIDADE_LEITURA` e tratamento de impedimentos por `COD_NOTA_VISITA`.")
+st.title("⚡ Processador Operacional (Leituras & Entregas - Turbo)")
+st.markdown("Otimizado com motor de leitura de alta velocidade e triagem inteligente de colunas.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# FUNÇÃO DE PROCESSAMENTO E CRUZAMENTO
+# FUNÇÃO DE PROCESSAMENTO DE ALTA PERFORMANCE
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def processar_arquivos_unificados(uploaded_files):
     dfs_leitura = []
     dfs_entrega = []
 
-    # 1º Passo: Ler e separar os arquivos enviados por categoria
     for file in uploaded_files:
         file.seek(0)
         file_bytes = file.read()
         df_temp = None
 
         if file.name.lower().endswith('.csv'):
+            # Leitura rápida de CSV
             for enc in ['latin1', 'utf-8', 'iso-8859-1']:
                 for sep in [';', ',']:
                     try:
@@ -52,26 +53,20 @@ def processar_arquivos_unificados(uploaded_files):
                 if df_temp is not None:
                     break
         else:
+            # Leitura de Excel ultrarrápida usando o engine calamine se disponível, senão openpyxl
             try:
-                df_temp = pd.read_excel(io.BytesIO(file_bytes))
+                df_temp = pd.read_excel(io.BytesIO(file_bytes), engine='calamine')
             except Exception:
-                continue
+                try:
+                    df_temp = pd.read_excel(io.BytesIO(file_bytes), engine='openpyxl')
+                except Exception:
+                    continue
 
         if df_temp is None or df_temp.empty:
             continue
 
         # Normalização dos nomes das colunas
         df_temp.columns = df_temp.columns.astype(str).str.strip().str.upper()
-
-        # Higienização de texto
-        for col in df_temp.select_dtypes(include='object').columns:
-            df_temp[col] = (
-                df_temp[col]
-                .astype(str)
-                .str.replace(r'[\r\n]+', ' ', regex=True)
-                .str.replace('"', '')
-                .str.strip()
-            )
 
         is_entrega = ('DATA_HORA_APROXIMADA' in df_temp.columns or 'DAT_PREVISTA_ENTREGA' in df_temp.columns)
 
@@ -80,15 +75,15 @@ def processar_arquivos_unificados(uploaded_files):
         else:
             dfs_leitura.append(df_temp)
 
-    # -------------------------------------------------------------------------
-    # 2º Passo: Processar Leituras e Mapear Unidade -> Lote
-    # -------------------------------------------------------------------------
     mapa_unidade_lote = {}
     dfs_processados = []
 
+    # Processamento de Leituras
     if dfs_leitura:
         df_leitura_concat = pd.concat(dfs_leitura, ignore_index=True)
-        
+        del dfs_leitura
+        gc.collect()
+
         col_dt = 'DT_INI_ACAO' if 'DT_INI_ACAO' in df_leitura_concat.columns else 'DAT_PREVISTA'
         col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_leitura_concat.columns else 'BASE_OPERACIONAL'
         col_mun = 'NOM_MUNICIPIO' if 'NOM_MUNICIPIO' in df_leitura_concat.columns else 'MUNICIPIO'
@@ -101,7 +96,6 @@ def processar_arquivos_unificados(uploaded_files):
         col_tipo_atv = 'TIPO_ATIVIDADE' if 'TIPO_ATIVIDADE' in df_leitura_concat.columns else 'TIPO_SERVICO'
         col_nota = 'COD_NOTA_VISITA' if 'COD_NOTA_VISITA' in df_leitura_concat.columns else None
 
-        # Filtro estrito: Apenas P, R, C
         if col_ind_tipo in df_leitura_concat.columns:
             df_leitura_concat = df_leitura_concat[df_leitura_concat[col_ind_tipo].astype(str).str.strip().isin(['P', 'R', 'C'])].copy()
 
@@ -111,58 +105,55 @@ def processar_arquivos_unificados(uploaded_files):
             dt_series = pd.to_datetime(df_leitura_concat[col_dt], dayfirst=True, errors='coerce') if col_dt in df_leitura_concat.columns else pd.Series(pd.NaT, index=df_leitura_concat.index)
 
             df_padrao_leituras['DATA_HORA_DT'] = dt_series
-            df_padrao_leituras['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
-            df_padrao_leituras['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
+            df_padrao_leituras['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data').astype('category')
+            df_padrao_leituras['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A').astype('category')
 
-            df_padrao_leituras['BASE_STD'] = df_leitura_concat[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_leitura_concat.columns else 'Não Informado'
-            df_padrao_leituras['MUNICIPIO_STD'] = df_leitura_concat[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_leitura_concat.columns else 'Não Informado'
+            df_padrao_leituras['BASE_STD'] = df_leitura_concat[col_base].fillna('Não Informado').astype(str).str.strip().str.replace('nan', 'Não Informado').astype('category')
+            df_padrao_leituras['MUNICIPIO_STD'] = df_leitura_concat[col_mun].fillna('Não Informado').astype(str).str.strip().str.replace('nan', 'Não Informado').astype('category')
             
-            lote_s = df_leitura_concat[col_lote].fillna('').astype(str).str.strip() if col_lote in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
-            df_padrao_leituras['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'})
+            lote_s = df_leitura_concat[col_lote].fillna('').astype(str).str.strip()
+            df_padrao_leituras['LOTE_STD'] = lote_s.replace({'': '(Sem Lote)', 'nan': '(Sem Lote)'}).astype('category')
             
-            unidade_s = df_leitura_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_leitura_concat.columns else pd.Series('Não Informado', index=df_leitura_concat.index)
-            df_padrao_leituras['UNIDADE_STD'] = unidade_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+            unidade_s = df_leitura_concat[col_unidade].fillna('Não Informado').astype(str).str.strip()
+            df_padrao_leituras['UNIDADE_STD'] = unidade_s.replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype('category')
 
-            # Criar dicionário de mapeamento Unitário -> Lote (excluindo os vazios/sem lote)
             valido_map = df_padrao_leituras[(df_padrao_leituras['UNIDADE_STD'] != 'Não Informado') & (df_padrao_leituras['LOTE_STD'] != '(Sem Lote)')]
             if not valido_map.empty:
                 mapa_unidade_lote = valido_map.groupby('UNIDADE_STD')['LOTE_STD'].first().to_dict()
 
-            cod_ag = df_leitura_concat[col_cod_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_cod_agente in df_leitura_concat.columns else pd.Series('Sem Código', index=df_leitura_concat.index)
-            df_padrao_leituras['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
+            cod_ag = df_leitura_concat[col_cod_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            df_padrao_leituras['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'}).astype('category')
             
-            nom_ag = df_leitura_concat[col_nom_agente].fillna('').astype(str).str.strip() if col_nom_agente in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
+            nom_ag = df_leitura_concat[col_nom_agente].fillna('').astype(str).str.strip()
             df_padrao_leituras['NOM_AGENTE_STD'] = nom_ag.replace({'nan': ''})
             
-            loc_s = df_leitura_concat[col_loc].fillna('').astype(str).str.strip() if col_loc in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
-            df_padrao_leituras['LOCALIZACAO_STD'] = loc_s.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+            loc_s = df_leitura_concat[col_loc].fillna('').astype(str).str.strip()
+            df_padrao_leituras['LOCALIZACAO_STD'] = loc_s.replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype('category')
             
-            df_padrao_leituras['IND_TIPO_STD'] = df_leitura_concat[col_ind_tipo].astype(str).str.strip()
+            df_padrao_leituras['IND_TIPO_STD'] = df_leitura_concat[col_ind_tipo].astype(str).str.strip().astype('category')
             
-            atv_s = df_leitura_concat[col_tipo_atv].fillna('Leitura').astype(str).str.strip() if col_tipo_atv in df_leitura_concat.columns else pd.Series('Leitura', index=df_leitura_concat.index)
-            df_padrao_leituras['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'})
+            atv_s = df_leitura_concat[col_tipo_atv].fillna('Leitura').astype(str).str.strip()
+            df_padrao_leituras['TIPO_ATIVIDADE_STD'] = atv_s.replace({'': 'Leitura', 'nan': 'Leitura'}).astype('category')
 
             df_padrao_leituras['TAREFA_STD'] = df_leitura_concat.index
 
-            # Tratamento de Impedimentos (COD_NOTA_VISITA)
-            if col_nota and col_nota in df_leitura_concat.columns:
-                nota_series = df_leitura_concat[col_nota].fillna('').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            else:
-                nota_series = pd.Series('', index=df_leitura_concat.index)
+            nota_series = df_leitura_concat[col_nota].fillna('').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_nota and col_nota in df_leitura_concat.columns else pd.Series('', index=df_leitura_concat.index)
 
-            df_padrao_leituras['IMP_GRUPO_1'] = nota_series.str.startswith('1').astype(int)
-            df_padrao_leituras['IMP_GRUPO_2'] = nota_series.str.startswith('2').astype(int)
-            df_padrao_leituras['TOTAL_IMP'] = df_padrao_leituras['IMP_GRUPO_1'] + df_padrao_leituras['IMP_GRUPO_2']
-            df_padrao_leituras['LEITURA_LIMPA'] = (df_padrao_leituras['TOTAL_IMP'] == 0).astype(int)
-            df_padrao_leituras['ORIGEM_DADO'] = "Leitura"
+            df_padrao_leituras['IMP_GRUPO_1'] = nota_series.str.startswith('1').astype('int8')
+            df_padrao_leituras['IMP_GRUPO_2'] = nota_series.str.startswith('2').astype('int8')
+            df_padrao_leituras['TOTAL_IMP'] = (df_padrao_leituras['IMP_GRUPO_1'] + df_padrao_leituras['IMP_GRUPO_2']).astype('int8')
+            df_padrao_leituras['LEITURA_LIMPA'] = (df_padrao_leituras['TOTAL_IMP'] == 0).astype('int8')
+            df_padrao_leituras['ORIGEM_DADO'] = pd.Series("Leitura", index=df_leitura_concat.index, dtype='category')
 
             dfs_processados.append(df_padrao_leituras)
+            del df_leitura_concat
+            gc.collect()
 
-    # -------------------------------------------------------------------------
-    # 3º Passo: Processar Entregas e Aplicar Cruzamento de Lote
-    # -------------------------------------------------------------------------
+    # Processamento de Entregas
     if dfs_entrega:
         df_entrega_concat = pd.concat(dfs_entrega, ignore_index=True)
+        del dfs_entrega
+        gc.collect()
         
         col_dt = 'DATA_HORA_APROXIMADA' if 'DATA_HORA_APROXIMADA' in df_entrega_concat.columns else 'DAT_PREVISTA_ENTREGA'
         col_base = 'NOM_BASE_OPERACIONAL' if 'NOM_BASE_OPERACIONAL' in df_entrega_concat.columns else 'BASE_OPERACIONAL'
@@ -175,48 +166,43 @@ def processar_arquivos_unificados(uploaded_files):
         dt_series = pd.to_datetime(df_entrega_concat[col_dt], dayfirst=True, errors='coerce') if col_dt in df_entrega_concat.columns else pd.Series(pd.NaT, index=df_entrega_concat.index)
 
         df_padrao_entregas['DATA_HORA_DT'] = dt_series
-        df_padrao_entregas['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data')
-        df_padrao_entregas['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A')
+        df_padrao_entregas['DATA_REAL'] = dt_series.dt.strftime('%d/%m/%Y').fillna('Sem Data').astype('category')
+        df_padrao_entregas['HORA'] = dt_series.dt.strftime('%H:%M').fillna('N/A').astype('category')
 
-        df_padrao_entregas['BASE_STD'] = df_entrega_concat[col_base].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_base in df_entrega_concat.columns else 'Não Informado'
-        df_padrao_entregas['MUNICIPIO_STD'] = df_entrega_concat[col_mun].fillna('Não Informado').replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype(str).str.strip() if col_mun in df_entrega_concat.columns else 'Não Informado'
+        df_padrao_entregas['BASE_STD'] = df_entrega_concat[col_base].fillna('Não Informado').astype(str).str.strip().str.replace('nan', 'Não Informado').astype('category')
+        df_padrao_entregas['MUNICIPIO_STD'] = df_entrega_concat[col_mun].fillna('Não Informado').astype(str).str.strip().str.replace('nan', 'Não Informado').astype('category')
         
-        unidade_e = df_entrega_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_entrega_concat.columns else pd.Series('Não Informado', index=df_entrega_concat.index)
-        df_padrao_entregas['UNIDADE_STD'] = unidade_e.replace({'': 'Não Informado', 'nan': 'Não Informado'})
+        unidade_e = df_entrega_concat[col_unidade].fillna('Não Informado').astype(str).str.strip()
+        df_padrao_entregas['UNIDADE_STD'] = unidade_e.replace({'': 'Não Informado', 'nan': 'Não Informado'}).astype('category')
 
-        # Cruzamento: Buscar o Lote da Leitura correspondente à Unidade da Entrega
-        def associar_lote_cruzado(row):
-            uni = row['UNIDADE_STD']
-            if uni in mapa_unidade_lote:
-                return mapa_unidade_lote[uni]
-            return "(Sem Lote Cruzado)"
+        df_padrao_entregas['LOTE_STD'] = df_padrao_entregas['UNIDADE_STD'].map(mapa_unidade_lote).fillna("(Sem Lote Cruzado)").astype('category')
 
-        df_padrao_entregas['LOTE_STD'] = df_padrao_entregas.apply(associar_lote_cruzado, axis=1)
-
-        cod_ag = df_entrega_concat[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_entrega_concat.columns else pd.Series('Sem Código', index=df_entrega_concat.index)
-        df_padrao_entregas['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'})
+        cod_ag = df_entrega_concat[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        df_padrao_entregas['COD_AGENTE_STD'] = cod_ag.replace({'nan': 'Sem Código', '': 'Sem Código'}).astype('category')
         df_padrao_entregas['NOM_AGENTE_STD'] = ""
         
-        df_padrao_entregas['LOCALIZACAO_STD'] = "(N/A - Entrega)"
-        df_padrao_entregas['IND_TIPO_STD'] = "E"
-        df_padrao_entregas['TIPO_ATIVIDADE_STD'] = "Entrega"
+        df_padrao_entregas['LOCALIZACAO_STD'] = pd.Series("(N/A - Entrega)", index=df_entrega_concat.index, dtype='category')
+        df_padrao_entregas['IND_TIPO_STD'] = pd.Series("E", index=df_entrega_concat.index, dtype='category')
+        df_padrao_entregas['TIPO_ATIVIDADE_STD'] = pd.Series("Entrega", index=df_entrega_concat.index, dtype='category')
         df_padrao_entregas['TAREFA_STD'] = df_entrega_concat[col_tarefa] if col_tarefa in df_entrega_concat.columns else df_entrega_concat.index
 
-        # Entregas não possuem impedimentos
-        df_padrao_entregas['IMP_GRUPO_1'] = 0
-        df_padrao_entregas['IMP_GRUPO_2'] = 0
-        df_padrao_entregas['TOTAL_IMP'] = 0
-        df_padrao_entregas['LEITURA_LIMPA'] = 1
-        df_padrao_entregas['ORIGEM_DADO'] = "Entrega"
+        df_padrao_entregas['IMP_GRUPO_1'] = pd.Series(0, index=df_entrega_concat.index, dtype='int8')
+        df_padrao_entregas['IMP_GRUPO_2'] = pd.Series(0, index=df_entrega_concat.index, dtype='int8')
+        df_padrao_entregas['TOTAL_IMP'] = pd.Series(0, index=df_entrega_concat.index, dtype='int8')
+        df_padrao_entregas['LEITURA_LIMPA'] = pd.Series(1, index=df_entrega_concat.index, dtype='int8')
+        df_padrao_entregas['ORIGEM_DADO'] = pd.Series("Entrega", index=df_entrega_concat.index, dtype='category')
 
         dfs_processados.append(df_padrao_entregas)
+        del df_entrega_concat
+        gc.collect()
 
     if not dfs_processados:
         return None
 
     df_concat = pd.concat(dfs_processados, ignore_index=True)
+    del dfs_processados
+    gc.collect()
 
-    # Preenchimento cruzado de agentes sem nome
     agentes_map = df_concat[df_concat['NOM_AGENTE_STD'] != ''].groupby('COD_AGENTE_STD')['NOM_AGENTE_STD'].first().to_dict()
     
     def atualizar_agente_completo(row):
@@ -226,7 +212,7 @@ def processar_arquivos_unificados(uploaded_files):
             nom = agentes_map[cod]
         return f"{cod} - {nom}" if nom else cod
 
-    df_concat['AGENTE_COMPLETO'] = df_concat.apply(atualizar_agente_completo, axis=1)
+    df_concat['AGENTE_COMPLETO'] = df_concat.apply(atualizar_agente_completo, axis=1).astype('category')
 
     return df_concat
 
@@ -240,7 +226,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    with st.spinner("🚀 Cruzando lotes por unidade e processando dados..."):
+    with st.spinner("🚀 Processando dados em modo turbo..."):
         df = processar_arquivos_unificados(uploaded_files)
 
     if df is not None and not df.empty:
@@ -261,18 +247,18 @@ if uploaded_files:
         f_agente = criar_multiselect("Agente Comercial", 'AGENTE_COMPLETO')
         f_data_real = criar_multiselect("Data da Ação", 'DATA_REAL')
 
-        # Aplicação dos Filtros
+        # Aplicação dos Filtros de forma segura
         df_filtrado = df[
-            (df['ORIGEM_DADO'].astype(str).isin(f_origem)) &
-            (df['BASE_STD'].astype(str).isin(f_base)) &
-            (df['MUNICIPIO_STD'].astype(str).isin(f_mun)) &
-            (df['UNIDADE_STD'].astype(str).isin(f_unidade)) &
-            (df['LOTE_STD'].astype(str).isin(f_lote)) &
-            (df['LOCALIZACAO_STD'].astype(str).isin(f_loc)) &
-            (df['IND_TIPO_STD'].astype(str).isin(f_ind_tipo)) &
-            (df['TIPO_ATIVIDADE_STD'].astype(str).isin(f_tipo_atv)) &
-            (df['AGENTE_COMPLETO'].astype(str).isin(f_agente)) &
-            (df['DATA_REAL'].astype(str).isin(f_data_real))
+            df['ORIGEM_DADO'].astype(str).isin(f_origem) &
+            df['BASE_STD'].astype(str).isin(f_base) &
+            df['MUNICIPIO_STD'].astype(str).isin(f_mun) &
+            df['UNIDADE_STD'].astype(str).isin(f_unidade) &
+            df['LOTE_STD'].astype(str).isin(f_lote) &
+            df['LOCALIZACAO_STD'].astype(str).isin(f_loc) &
+            df['IND_TIPO_STD'].astype(str).isin(f_ind_tipo) &
+            df['TIPO_ATIVIDADE_STD'].astype(str).isin(f_tipo_atv) &
+            df['AGENTE_COMPLETO'].astype(str).isin(f_agente) &
+            df['DATA_REAL'].astype(str).isin(f_data_real)
         ]
 
         if df_filtrado.empty:
@@ -318,7 +304,7 @@ if uploaded_files:
             col_graf1, col_graf2 = st.columns(2)
             with col_graf1:
                 st.subheader("🏙️ Volume por Município")
-                df_cidade = df_filtrado.groupby('MUNICIPIO_STD').size().reset_index(name='Qtd Registros')
+                df_cidade = df_filtrado.groupby('MUNICIPIO_STD', observed=False).size().reset_index(name='Qtd Registros')
                 fig_cidade = px.bar(
                     df_cidade, x='MUNICIPIO_STD', y='Qtd Registros', text_auto=True,
                     labels={'MUNICIPIO_STD': 'Município', 'Qtd Registros': 'Volume'},
@@ -329,7 +315,7 @@ if uploaded_files:
 
             with col_graf2:
                 st.subheader("📊 Produção por IND_TIPO")
-                df_ind_graf = df_filtrado.groupby('IND_TIPO_STD').size().reset_index(name='Qtd Registros')
+                df_ind_graf = df_filtrado.groupby('IND_TIPO_STD', observed=False).size().reset_index(name='Qtd Registros')
                 fig_ind = px.pie(
                     df_ind_graf, names='IND_TIPO_STD', values='Qtd Registros', hole=0.45,
                     color_discrete_sequence=px.colors.qualitative.Set2
