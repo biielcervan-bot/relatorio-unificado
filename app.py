@@ -39,7 +39,7 @@ def ler_arquivo_em_chunks(file, chunk_size=50000):
                 chunks.append(chunk)
         except Exception:
             file.seek(0)
-            # Fallback para latin1 caso enconding padrão falhe
+            # Fallback para latin1 caso encoding padrão falhe
             for chunk in pd.read_csv(file, chunksize=chunk_size, low_memory=False, encoding='latin1', on_bad_lines='skip', sep=';'):
                 for col in chunk.select_dtypes(include='object').columns:
                     chunk[col] = chunk[col].astype('category')
@@ -258,4 +258,137 @@ if uploaded_files:
         st.sidebar.header("🎯 Filtros Unificados")
 
         def criar_multiselect(label, col_name):
-            opcoes = sorted([str(x) for x in df[col_name].unique() if str(x) not in
+            opcoes = sorted([str(x) for x in df[col_name].unique() if str(x) not in ['nan', 'nan - nan']])
+            return st.sidebar.multiselect(label, options=opcoes, default=opcoes)
+
+        f_origem = criar_multiselect("Origem do Dado", 'ORIGEM_DADO')
+        f_base = criar_multiselect("Base Operacional", 'BASE_STD')
+        f_mun = criar_multiselect("Município", 'MUNICIPIO_STD')
+        f_unidade = criar_multiselect("Unidade de Leitura", 'UNIDADE_STD')
+        f_lote = criar_multiselect("Lote (Cruzado)", 'LOTE_STD')
+        f_loc = criar_multiselect("Localização", 'LOCALIZACAO_STD')
+        f_ind_tipo = criar_multiselect("IND_TIPO (E, P, R, C)", 'IND_TIPO_STD')
+        f_tipo_atv = criar_multiselect("Tipo de Atividade", 'TIPO_ATIVIDADE_STD')
+        f_agente = criar_multiselect("Agente Comercial", 'AGENTE_COMPLETO')
+        f_data_real = criar_multiselect("Data da Ação", 'DATA_REAL')
+
+        df_filtrado = df[
+            (df['ORIGEM_DADO'].astype(str).isin(f_origem)) &
+            (df['BASE_STD'].astype(str).isin(f_base)) &
+            (df['MUNICIPIO_STD'].astype(str).isin(f_mun)) &
+            (df['UNIDADE_STD'].astype(str).isin(f_unidade)) &
+            (df['LOTE_STD'].astype(str).isin(f_lote)) &
+            (df['LOCALIZACAO_STD'].astype(str).isin(f_loc)) &
+            (df['IND_TIPO_STD'].astype(str).isin(f_ind_tipo)) &
+            (df['TIPO_ATIVIDADE_STD'].astype(str).isin(f_tipo_atv)) &
+            (df['AGENTE_COMPLETO'].astype(str).isin(f_agente)) &
+            (df['DATA_REAL'].astype(str).isin(f_data_real))
+        ]
+
+        if df_filtrado.empty:
+            st.warning("⚠️ Nenhum registro encontrado para a combinação de filtros selecionada.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Registros", f"{len(df_filtrado):,}".replace(",", "."))
+            col2.metric("Registros Limpos", f"{df_filtrado['LEITURA_LIMPA'].sum():,}".replace(",", "."))
+            col3.metric("Impedimentos G1", f"{df_filtrado['IMP_GRUPO_1'].sum():,}".replace(",", "."))
+            col4.metric("Impedimentos G2", f"{df_filtrado['IMP_GRUPO_2'].sum():,}".replace(",", "."))
+
+            total_geral_imp = df_filtrado['TOTAL_IMP'].sum()
+            st.info(f"🚨 **Total Geral de Impedimentos Operacionais:** {total_geral_imp:,}".replace(",", "."))
+
+            st.markdown("---")
+
+            def hora_min_max(s, tipo):
+                v = s.dropna()
+                if v.empty: return "N/A"
+                res = v.min() if tipo == 'min' else v.max()
+                return res.strftime('%H:%M') if pd.notna(res) else "N/A"
+
+            df_resumo = df_filtrado.groupby([
+                'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
+                'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO'
+            ], as_index=False).agg(
+                TOTAL_REGISTROS=('TAREFA_STD', 'count'),
+                LEITURAS_LIMPAS=('LEITURA_LIMPA', 'sum'),
+                IMP_G1=('IMP_GRUPO_1', 'sum'),
+                IMP_G2=('IMP_GRUPO_2', 'sum'),
+                TOTAL_IMP=('TOTAL_IMP', 'sum'),
+                HORA_INI=('DATA_HORA_DT', lambda x: hora_min_max(x, 'min')),
+                HORA_FIM=('DATA_HORA_DT', lambda x: hora_min_max(x, 'max'))
+            )
+
+            df_resumo.columns = [
+                'Data Realização', 'Base Operacional', 'Município', 'Lote',
+                'Unidade de Leitura', 'Localização', 'IND_TIPO', 'Tipo Atividade',
+                'Agente Comercial', 'Total Registros', 'Limpos / Sucesso',
+                'Impedimentos G1', 'Impedimentos G2', 'Total Impedimentos', '1ª Ação', 'Última Ação'
+            ]
+
+            col_graf1, col_graf2 = st.columns(2)
+            with col_graf1:
+                st.subheader("🏙️ Volume por Município")
+                df_cidade = df_filtrado.groupby('MUNICIPIO_STD').size().reset_index(name='Qtd Registros')
+                fig_cidade = px.bar(
+                    df_cidade, x='MUNICIPIO_STD', y='Qtd Registros', text_auto=True,
+                    labels={'MUNICIPIO_STD': 'Município', 'Qtd Registros': 'Volume'},
+                    color_discrete_sequence=['#1f77b4']
+                )
+                fig_cidade.update_layout(xaxis_title="", yaxis_title="")
+                st.plotly_chart(fig_cidade, use_container_width=True)
+
+            with col_graf2:
+                st.subheader("📊 Produção por IND_TIPO")
+                df_ind_graf = df_filtrado.groupby('IND_TIPO_STD').size().reset_index(name='Qtd Registros')
+                fig_ind = px.pie(
+                    df_ind_graf, names='IND_TIPO_STD', values='Qtd Registros', hole=0.45,
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                st.plotly_chart(fig_ind, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📋 Resumo Consolidado por Atividade e Agente")
+            st.dataframe(df_resumo, use_container_width=True)
+
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_resumo.to_excel(writer, sheet_name="Resumo Consolidado", index=False)
+
+                df_detalhado_export = df_filtrado[[
+                    'ORIGEM_DADO', 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
+                    'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO', 'HORA',
+                    'LEITURA_LIMPA', 'IMP_GRUPO_1', 'IMP_GRUPO_2', 'TOTAL_IMP'
+                ]].copy()
+
+                df_detalhado_export.columns = [
+                    'Origem', 'Data Realização', 'Base Operacional', 'Município', 'Lote', 'Unidade de Leitura',
+                    'Localização', 'IND_TIPO', 'Tipo Atividade', 'Agente Comercial', 'Hora',
+                    'Registro Limpo (1/0)', 'Impedimento G1', 'Impedimento G2', 'Total Impedimentos'
+                ]
+                df_detalhado_export.to_excel(writer, sheet_name="Base Filtrada Detalhada", index=False)
+
+                workbook = writer.book
+                header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+                header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+                for ws in workbook.worksheets:
+                    for cell in ws[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                    for col in ws.columns:
+                        col_letter = get_column_letter(col[0].column)
+                        ws.column_dimensions[col_letter].width = 20
+
+            st.download_button(
+                label="📥 Baixar Relatório Unificado (Excel)",
+                data=buffer.getvalue(),
+                file_name="relatorio_unificado_operacional.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    else:
+        st.error("Não foi possível extrair dados válidos dos arquivos fornecidos.")
+else:
+    st.info("👆 Selecione um ou mais arquivos de Leitura e/ou Entrega acima para iniciar o processamento.")
