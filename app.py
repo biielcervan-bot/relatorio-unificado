@@ -224,17 +224,18 @@ def processar_arquivos_unificados(uploaded_files):
     del dfs_processados
     gc.collect()
 
-    # Mapeamento do Agente Completo
+    # Mapeamento do Nome do Agente
     agentes_map = df_concat[df_concat['NOM_AGENTE_STD'] != ''].groupby('COD_AGENTE_STD')['NOM_AGENTE_STD'].first().to_dict()
 
-    df_concat['NOM_MAPPED'] = df_concat['COD_AGENTE_STD'].map(agentes_map).fillna('')
-    df_concat['NOM_FINAL'] = df_concat['NOM_AGENTE_STD'].where(df_concat['NOM_AGENTE_STD'] != '', df_concat['NOM_MAPPED'])
-    
+    df_concat['NOM_MAPPED'] = df_concat['COD_AGENTE_STD'].map(agentes_map).fillna('Não Informado')
+    df_concat['NOME_AGENTE_FINAL'] = df_concat['NOM_AGENTE_STD'].where(df_concat['NOM_AGENTE_STD'] != '', df_concat['NOM_MAPPED'])
+    df_concat['NOME_AGENTE_FINAL'] = df_concat['NOME_AGENTE_FINAL'].replace({'': 'Não Informado', 'nan': 'Não Informado'})
+
     df_concat['AGENTE_COMPLETO'] = df_concat.apply(
-        lambda r: f"{r['COD_AGENTE_STD']} - {r['NOM_FINAL']}" if r['NOM_FINAL'] else r['COD_AGENTE_STD'], axis=1
+        lambda r: f"{r['COD_AGENTE_STD']} - {r['NOME_AGENTE_FINAL']}" if r['NOME_AGENTE_FINAL'] != 'Não Informado' else r['COD_AGENTE_STD'], axis=1
     )
-    
-    df_concat.drop(columns=['NOM_MAPPED', 'NOM_FINAL'], inplace=True)
+
+    df_concat.drop(columns=['NOM_MAPPED'], inplace=True)
 
     return df_concat
 
@@ -254,7 +255,6 @@ if uploaded_files:
     if df is not None and not df.empty:
         st.sidebar.header("🎯 Filtros Unificados")
 
-        # FUNÇÃO CORRIGIDA (SEM ERRO DE SINTAXE)
         def criar_multiselect(label, col_name):
             opcoes = sorted([str(x) for x in df[col_name].unique() if str(x) not in ['nan', 'nan - nan']])
             return st.sidebar.multiselect(label, options=opcoes, default=opcoes)
@@ -303,10 +303,11 @@ if uploaded_files:
                 res = v.min() if tipo == 'min' else v.max()
                 return res.strftime('%H:%M') if pd.notna(res) else "N/A"
 
-            # AGRUPAMENTO DO RESUMO CONSOLIDADO
+            # AGRUPAMENTO DO RESUMO CONSOLIDADO (CÓDIGO E NOME SEPARADOS)
             df_resumo = df_filtrado.groupby([
                 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
-                'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO'
+                'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 
+                'COD_AGENTE_STD', 'NOME_AGENTE_FINAL'
             ], as_index=False).agg(
                 TOTAL_REGISTROS=('TAREFA_STD', 'count'),
                 LEITURAS_LIMPAS=('LEITURA_LIMPA', 'sum'),
@@ -320,7 +321,7 @@ if uploaded_files:
             df_resumo.columns = [
                 'Data Realização', 'Base Operacional', 'Município', 'Lote',
                 'Unidade de Leitura', 'Localização', 'IND_TIPO', 'Tipo Atividade',
-                'Agente Comercial', 'Total Registros', 'Limpos / Sucesso',
+                'Código Agente', 'Nome Agente', 'Total Registros', 'Limpos / Sucesso',
                 'Impedimentos G1', 'Impedimentos G2', 'Total Impedimentos', '1ª Ação', 'Última Ação'
             ]
 
@@ -350,11 +351,10 @@ if uploaded_files:
             st.dataframe(df_resumo, use_container_width=True)
 
             # -----------------------------------------------------------------------------
-            # EXPORTAÇÃO EXCLUSIVA DO RESUMO (ULTRALEVE - EVITA MEMORY ERROR)
+            # EXPORTAÇÃO EXCLUSIVA DO RESUMO (ULTRALEVE)
             # -----------------------------------------------------------------------------
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                # Grava SOMENTE o resumo consolidado
                 df_resumo.to_excel(writer, sheet_name="Resumo Consolidado", index=False)
 
                 workbook = writer.book
