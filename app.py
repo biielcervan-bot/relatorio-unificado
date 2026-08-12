@@ -24,22 +24,19 @@ st.markdown("---")
 # FUNÇÃO AUXILIAR DE LEITURA EM CHUNKS (EVITA CRASH)
 # -----------------------------------------------------------------------------
 def ler_arquivo_em_chunks(file, chunk_size=50000):
-    """Lê o arquivo enviado em lotes sem carregar 200MB de uma só vez na memória."""
+    """Lê o arquivo enviado em lotes sem carregar arquivos grandes de uma só vez na RAM."""
     file.seek(0)
     chunks = []
     
     # Se for CSV
     if file.name.lower().endswith('.csv'):
-        # Tenta ler com engine C e separador automático
         try:
             for chunk in pd.read_csv(file, chunksize=chunk_size, low_memory=False, on_bad_lines='skip', sep=None, engine='python'):
-                # Otimiza memória convertendo 'object' para 'category'
                 for col in chunk.select_dtypes(include='object').columns:
                     chunk[col] = chunk[col].astype('category')
                 chunks.append(chunk)
         except Exception:
             file.seek(0)
-            # Fallback para latin1 caso encoding padrão falhe
             for chunk in pd.read_csv(file, chunksize=chunk_size, low_memory=False, encoding='latin1', on_bad_lines='skip', sep=';'):
                 for col in chunk.select_dtypes(include='object').columns:
                     chunk[col] = chunk[col].astype('category')
@@ -198,7 +195,7 @@ def processar_arquivos_unificados(uploaded_files):
         unidade_e = df_entrega_concat[col_unidade].fillna('Não Informado').astype(str).str.strip() if col_unidade in df_entrega_concat.columns else pd.Series('Não Informado', index=df_entrega_concat.index)
         df_padrao_entregas['UNIDADE_STD'] = unidade_e.replace({'': 'Não Informado', 'nan': 'Não Informado'})
 
-        # Cruzamento rápido usando .map (muito mais rápido que .apply)
+        # Cruzamento rápido via mapa
         df_padrao_entregas['LOTE_STD'] = df_padrao_entregas['UNIDADE_STD'].map(mapa_unidade_lote).fillna("(Sem Lote Cruzado)")
 
         cod_ag = df_entrega_concat[col_agente].fillna('Sem Código').astype(str).str.strip().str.replace(r'\.0$', '', regex=True) if col_agente in df_entrega_concat.columns else pd.Series('Sem Código', index=df_entrega_concat.index)
@@ -257,6 +254,7 @@ if uploaded_files:
     if df is not None and not df.empty:
         st.sidebar.header("🎯 Filtros Unificados")
 
+        # FUNÇÃO CORRIGIDA (SEM ERRO DE SINTAXE)
         def criar_multiselect(label, col_name):
             opcoes = sorted([str(x) for x in df[col_name].unique() if str(x) not in ['nan', 'nan - nan']])
             return st.sidebar.multiselect(label, options=opcoes, default=opcoes)
@@ -305,6 +303,7 @@ if uploaded_files:
                 res = v.min() if tipo == 'min' else v.max()
                 return res.strftime('%H:%M') if pd.notna(res) else "N/A"
 
+            # AGRUPAMENTO DO RESUMO CONSOLIDADO
             df_resumo = df_filtrado.groupby([
                 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
                 'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO'
@@ -350,41 +349,33 @@ if uploaded_files:
             st.subheader("📋 Resumo Consolidado por Atividade e Agente")
             st.dataframe(df_resumo, use_container_width=True)
 
+            # -----------------------------------------------------------------------------
+            # EXPORTAÇÃO EXCLUSIVA DO RESUMO (ULTRALEVE - EVITA MEMORY ERROR)
+            # -----------------------------------------------------------------------------
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                # Grava SOMENTE o resumo consolidado
                 df_resumo.to_excel(writer, sheet_name="Resumo Consolidado", index=False)
 
-                df_detalhado_export = df_filtrado[[
-                    'ORIGEM_DADO', 'DATA_REAL', 'BASE_STD', 'MUNICIPIO_STD', 'LOTE_STD', 'UNIDADE_STD',
-                    'LOCALIZACAO_STD', 'IND_TIPO_STD', 'TIPO_ATIVIDADE_STD', 'AGENTE_COMPLETO', 'HORA',
-                    'LEITURA_LIMPA', 'IMP_GRUPO_1', 'IMP_GRUPO_2', 'TOTAL_IMP'
-                ]].copy()
-
-                df_detalhado_export.columns = [
-                    'Origem', 'Data Realização', 'Base Operacional', 'Município', 'Lote', 'Unidade de Leitura',
-                    'Localização', 'IND_TIPO', 'Tipo Atividade', 'Agente Comercial', 'Hora',
-                    'Registro Limpo (1/0)', 'Impedimento G1', 'Impedimento G2', 'Total Impedimentos'
-                ]
-                df_detalhado_export.to_excel(writer, sheet_name="Base Filtrada Detalhada", index=False)
-
                 workbook = writer.book
+                ws = workbook["Resumo Consolidado"]
+
                 header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
                 header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
 
-                for ws in workbook.worksheets:
-                    for cell in ws[1]:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                for cell in ws[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                    for col in ws.columns:
-                        col_letter = get_column_letter(col[0].column)
-                        ws.column_dimensions[col_letter].width = 20
+                for col in ws.columns:
+                    col_letter = get_column_letter(col[0].column)
+                    ws.column_dimensions[col_letter].width = 22
 
             st.download_button(
-                label="📥 Baixar Relatório Unificado (Excel)",
+                label="📊 Baixar Resumo Consolidado (Excel)",
                 data=buffer.getvalue(),
-                file_name="relatorio_unificado_operacional.xlsx",
+                file_name="resumo_consolidado_operacional.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
